@@ -10,12 +10,13 @@ permissions:
 
 concurrency:
   group: homenet-selectel-image-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   image:
     if: github.repository == 'Athathoth-Doth-Decode/cert-manager-webhook-selectel' && github.ref == 'refs/heads/homenet/build'
-    runs-on: arc-runner-set
+    # Temporary fallback while the ARC scale set registration is repaired.
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
       contents: read
