@@ -15,8 +15,7 @@ concurrency:
 jobs:
   image:
     if: github.repository == 'Athathoth-Doth-Decode/cert-manager-webhook-selectel' && github.ref == 'refs/heads/homenet/build'
-    # Temporary fallback while the ARC scale set registration is repaired.
-    runs-on: ubuntu-24.04
+    runs-on: arc-runner-set
     timeout-minutes: 45
     permissions:
       contents: read
