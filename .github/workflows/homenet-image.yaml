@@ -1,6 +1,8 @@
 name: Build HomeNet Selectel webhook
 
 on:
+  push:
+    branches: [homenet/build]
   workflow_dispatch:
 
 permissions:
@@ -17,12 +19,11 @@ jobs:
     timeout-minutes: 45
     permissions:
       contents: read
-      packages: write
     defaults:
       run:
         shell: bash
     env:
-      IMAGE: ghcr.io/athathoth-doth-decode/cert-manager-webhook-selectel
+      IMAGE: registry.trak.spb.ru/infrastructure/cert-manager-webhook-selectel
     steps:
       - name: Check out the exact revision
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -102,23 +103,46 @@ jobs:
           docker run --rm --network none -e GROUP_NAME=acme.selectel.ru \
             "$IMAGE:sha-$GITHUB_SHA" --help
 
-      - name: Log in with the workflow's temporary token
+      - name: Log in to Zot
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          registry: registry.trak.spb.ru
+          username: ${{ secrets.ZOT_USERNAME }}
+          password: ${{ secrets.ZOT_PASSWORD }}
 
-      - name: Publish the tested image and record its digest
+      # Reuse the tested build cache, exporting OCI manifests for Zot.
+      - name: Publish the tested build to Zot
+        id: publish
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          platforms: linux/amd64
+          outputs: type=image,push=true,oci-mediatypes=true
+          provenance: false
+          tags: ${{ env.IMAGE }}:sha-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=1.4.0-homenet-${{ github.sha }}
+          build-args: |
+            HTTP_PROXY
+            HTTPS_PROXY
+            NO_PROXY
+            http_proxy
+            https_proxy
+            no_proxy
+
+      - name: Verify publication and record the deployment reference
+        env:
+          PUBLISHED_DIGEST: ${{ steps.publish.outputs.digest }}
         run: |
           set -euo pipefail
           image_ref="$IMAGE:sha-$GITHUB_SHA"
-          docker push "$image_ref"
-          digest=$(docker buildx imagetools inspect "$image_ref" --format '{{json .Manifest}}' | jq -r '.digest')
-          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          [[ "$PUBLISHED_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+          docker buildx imagetools inspect "$IMAGE@$PUBLISHED_DIGEST"
           {
             printf 'Image: `%s`\n\n' "$image_ref"
-            printf 'Deployment reference: `%s@%s`\n\n' "$IMAGE" "$digest"
+            printf 'Deployment reference: `%s@%s`\n\n' "$IMAGE" "$PUBLISHED_DIGEST"
             printf 'Revision: `%s`\n\n' "$GITHUB_SHA"
             printf 'Unit tests, conformance compilation and offline smoke test passed.\n'
             printf 'Live DNS-01 tests were not run.\n'
