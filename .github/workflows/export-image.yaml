@@ -20,9 +20,14 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
-      DOCKER_CONFIG: ${{ runner.temp }}/docker-auth
       SOURCE: ghcr.io/athathoth-doth-decode/cert-manager-webhook-selectel@sha256:c6b6e4c1cb03a35c5a00dbd1b863e5dc65365672a723ad6a60267a1af8c6ece5
     steps:
+      - name: Set the temporary Docker credential directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'DOCKER_CONFIG=%s/docker-auth\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+
       - name: Log in with the repository workflow token
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
