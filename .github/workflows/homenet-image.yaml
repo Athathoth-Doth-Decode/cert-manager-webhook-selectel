@@ -1,0 +1,127 @@
+name: Build HomeNet Selectel webhook
+
+on:
+  push:
+    branches: [homenet/build]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: homenet-selectel-image-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  image:
+    if: github.repository == 'Athathoth-Doth-Decode/cert-manager-webhook-selectel' && github.ref == 'refs/heads/homenet/build'
+    runs-on: arc-runner-set
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    defaults:
+      run:
+        shell: bash
+    env:
+      IMAGE: ghcr.io/athathoth-doth-decode/cert-manager-webhook-selectel
+    steps:
+      - name: Check out the exact revision
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Export ARC proxy settings
+        run: |
+          set -euo pipefail
+          for upper in HTTP_PROXY HTTPS_PROXY NO_PROXY; do
+            lower=${upper,,}
+            value=${!lower:-${!upper:-}}
+            if [[ "$value" == *$'\n'* || "$value" == *$'\r'* ]]; then
+              echo "Invalid multiline proxy setting: $upper" >&2
+              exit 1
+            fi
+            printf '%s=%s\n' "$upper" "$value" >> "$GITHUB_ENV"
+            printf '%s=%s\n' "$lower" "$value" >> "$GITHUB_ENV"
+          done
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        with:
+          driver-opts: |
+            "env.HTTP_PROXY=${{ env.HTTP_PROXY }}"
+            "env.HTTPS_PROXY=${{ env.HTTPS_PROXY }}"
+            "env.NO_PROXY=${{ env.NO_PROXY }}"
+
+      - name: Build the compiler stage for tests
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          target: build
+          platforms: linux/amd64
+          load: true
+          tags: selectel-webhook-test:${{ github.sha }}
+          build-args: |
+            HTTP_PROXY
+            HTTPS_PROXY
+            NO_PROXY
+            http_proxy
+            https_proxy
+            no_proxy
+
+      - name: Run unit tests and compile DNS conformance tests
+        run: |
+          set -euo pipefail
+          docker run --rm --network none -e CGO_ENABLED=0 \
+            "selectel-webhook-test:$GITHUB_SHA" sh -ec '
+              go mod verify
+              go test -count=1 ./selectel/...
+              go test -c -o /tmp/webhook-conformance.test .
+            '
+
+      - name: Build the runtime image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: ${{ env.IMAGE }}:sha-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=1.4.0-homenet-${{ github.sha }}
+          build-args: |
+            HTTP_PROXY
+            HTTPS_PROXY
+            NO_PROXY
+            http_proxy
+            https_proxy
+            no_proxy
+
+      - name: Smoke test the runtime without network access
+        run: |
+          set -euo pipefail
+          docker run --rm --network none -e GROUP_NAME=acme.selectel.ru \
+            "$IMAGE:sha-$GITHUB_SHA" --help
+
+      - name: Log in with the workflow's temporary token
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish the tested image and record its digest
+        run: |
+          set -euo pipefail
+          image_ref="$IMAGE:sha-$GITHUB_SHA"
+          docker push "$image_ref"
+          digest=$(docker buildx imagetools inspect "$image_ref" --format '{{json .Manifest}}' | jq -r '.digest')
+          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          {
+            printf 'Image: `%s`\n\n' "$image_ref"
+            printf 'Deployment reference: `%s@%s`\n\n' "$IMAGE" "$digest"
+            printf 'Revision: `%s`\n\n' "$GITHUB_SHA"
+            printf 'Unit tests, conformance compilation and offline smoke test passed.\n'
+            printf 'Live DNS-01 tests were not run.\n'
+          } >> "$GITHUB_STEP_SUMMARY"
